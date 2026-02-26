@@ -1,11 +1,8 @@
 """MindMapAgent — Collaborative brainstorming with AI-powered mindmaps."""
 
-import os
-
 import flet as ft
-from dotenv import load_dotenv
 
-from llm import analyse_ideas
+from llm import PROVIDERS, analyse_ideas, configure, is_configured, validate_key
 from mindmap import render_mindmap_html
 from session import (
     SessionStatus,
@@ -13,8 +10,6 @@ from session import (
     create_session,
     get_session,
 )
-
-load_dotenv()
 
 
 async def main(page: ft.Page):
@@ -46,10 +41,10 @@ async def main(page: ft.Page):
                 ],
                 spacing=8,
             ),
-            padding=ft.padding.symmetric(horizontal=12, vertical=8),
+            padding=ft.Padding.symmetric(horizontal=12, vertical=8),
             border_radius=8,
             bgcolor=ft.Colors.BLUE_50,
-            margin=ft.margin.only(bottom=4),
+            margin=ft.Margin.only(bottom=4),
         )
 
     # ── PubSub handler ──────────────────────────────────────────────
@@ -72,6 +67,51 @@ async def main(page: ft.Page):
         state.update(session_id=None, name=None, is_moderator=False)
         ui.update(ideas_list=None, participants=None, status=None)
 
+        # ── API key configuration ──
+        provider_options = [ft.DropdownOption(key=p, text=p) for p in PROVIDERS]
+        provider_dd = ft.Dropdown(
+            label="AI Provider",
+            options=provider_options,
+            value="Gemini",
+            width=200,
+        )
+        key_field = ft.TextField(
+            label="API Key",
+            password=True,
+            can_reveal_password=True,
+            expand=True,
+        )
+        key_status = ft.Text("", size=12)
+
+        def _update_key_status(ok: bool, msg: str):
+            if ok:
+                key_status.value = msg
+                key_status.color = ft.Colors.GREEN_700
+            else:
+                key_status.value = msg
+                key_status.color = ft.Colors.RED_600
+
+        async def on_save_key(e):
+            provider = provider_dd.value
+            key = key_field.value.strip()
+            if not key:
+                _update_key_status(False, "Please enter an API key.")
+                page.update()
+                return
+            _update_key_status(False, "Validating...")
+            page.update()
+            err = await validate_key(provider, key)
+            if err:
+                _update_key_status(False, f"Invalid key: {err}")
+            else:
+                configure(provider, key)
+                _update_key_status(True, f"Key valid ({provider})")
+            page.update()
+
+        if is_configured():
+            _update_key_status(True, "Key configured")
+
+        # ── Session controls ──
         topic_field = ft.TextField(
             label="Brainstorming topic",
             hint_text="e.g. Product ideas for Q3",
@@ -86,6 +126,10 @@ async def main(page: ft.Page):
         error = ft.Text("", color=ft.Colors.RED_400, size=12)
 
         def on_create(e):
+            if not is_configured():
+                error.value = "Please configure an API key first."
+                page.update()
+                return
             topic = topic_field.value.strip()
             if not topic:
                 error.value = "Please enter a topic."
@@ -119,11 +163,12 @@ async def main(page: ft.Page):
         page.add(
             ft.Container(
                 expand=True,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 content=ft.Column(
                     width=480,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                     spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
                     controls=[
                         ft.Container(height=20),
                         ft.Text("MindMapAgent", size=32, weight=ft.FontWeight.BOLD),
@@ -132,19 +177,36 @@ async def main(page: ft.Page):
                             size=14,
                             color=ft.Colors.GREY_600,
                         ),
-                        ft.Divider(height=30),
+                        ft.Divider(height=20),
+                        # ── API key section ──
+                        ft.Text("AI Provider", size=18, weight=ft.FontWeight.W_500),
+                        ft.Row(
+                            [provider_dd, key_field],
+                            spacing=8,
+                        ),
+                        ft.Row(
+                            [
+                                ft.Button("Save Key", icon=ft.Icons.KEY, on_click=on_save_key),
+                                key_status,
+                            ],
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        ),
+                        ft.Divider(height=20),
+                        # ── Create session ──
                         ft.Text("Start a new session", size=18, weight=ft.FontWeight.W_500),
                         topic_field,
-                        ft.ElevatedButton(
+                        ft.Button(
                             "Create Session",
                             icon=ft.Icons.ADD_CIRCLE_OUTLINE,
                             on_click=on_create,
                             style=ft.ButtonStyle(bgcolor=ft.Colors.BLUE_600, color=ft.Colors.WHITE),
                         ),
-                        ft.Divider(height=30),
+                        ft.Divider(height=20),
+                        # ── Join session ──
                         ft.Text("Join an existing session", size=18, weight=ft.FontWeight.W_500),
                         ft.Row(
-                            [join_field, ft.ElevatedButton("Join", on_click=on_join)],
+                            [join_field, ft.Button("Join", on_click=on_join)],
                             alignment=ft.MainAxisAlignment.CENTER,
                         ),
                         error,
@@ -176,7 +238,7 @@ async def main(page: ft.Page):
         page.add(
             ft.Container(
                 expand=True,
-                alignment=ft.alignment.center,
+                alignment=ft.Alignment.CENTER,
                 content=ft.Column(
                     width=420,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -190,7 +252,7 @@ async def main(page: ft.Page):
                         ),
                         ft.Container(height=10),
                         name_field,
-                        ft.ElevatedButton("Enter", on_click=submit),
+                        ft.Button("Enter", on_click=submit),
                     ],
                 ),
             )
@@ -226,7 +288,7 @@ async def main(page: ft.Page):
             autofocus=True,
         )
 
-        def submit_idea(e):
+        async def submit_idea(e):
             text = idea_field.value.strip()
             if not text or session.status != SessionStatus.ACTIVE:
                 return
@@ -235,6 +297,7 @@ async def main(page: ft.Page):
                 sid, {"type": "idea", "text": text, "author": state["name"]}
             )
             idea_field.value = ""
+            await idea_field.focus()
             page.update()
 
         idea_field.on_submit = submit_idea
@@ -245,12 +308,12 @@ async def main(page: ft.Page):
         )
 
         # Copy code button
-        def copy_code(e):
-            page.set_clipboard(sid)
+        async def copy_code(e):
+            await page.clipboard.set(sid)
             snack(f"Session code {sid} copied!")
 
         # ── Moderator controls ──
-        generate_btn = ft.ElevatedButton(
+        generate_btn = ft.Button(
             "Generate Mindmap",
             icon=ft.Icons.AUTO_AWESOME,
             style=ft.ButtonStyle(bgcolor=ft.Colors.GREEN_600, color=ft.Colors.WHITE),
@@ -261,8 +324,8 @@ async def main(page: ft.Page):
             if not session.ideas:
                 snack("No ideas to analyse yet!", error=True)
                 return
-            if not os.environ.get("ANTHROPIC_API_KEY"):
-                snack("ANTHROPIC_API_KEY not set in .env!", error=True)
+            if not is_configured():
+                snack("No API key configured! Go back and set one.", error=True)
                 return
 
             generate_btn.disabled = True
@@ -349,14 +412,14 @@ async def main(page: ft.Page):
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
-                padding=ft.padding.all(16),
+                padding=ft.Padding.all(16),
                 bgcolor=ft.Colors.BLUE_GREY_50,
             ),
             # Ideas list
             ft.Container(
                 content=ideas_list,
                 expand=True,
-                padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=8),
             ),
             # Input bar + moderator controls
             ft.Container(
@@ -367,7 +430,7 @@ async def main(page: ft.Page):
                     ]),
                     mod_row,
                 ], spacing=8),
-                padding=ft.padding.all(16),
+                padding=ft.Padding.all(16),
                 bgcolor=ft.Colors.GREY_100,
             ),
         )
@@ -406,7 +469,7 @@ async def main(page: ft.Page):
                     ft.OutlinedButton("Back to Session", icon=ft.Icons.ARROW_BACK, on_click=lambda e: show_session_room()),
                     ft.OutlinedButton("New Session", icon=ft.Icons.HOME, on_click=lambda e: show_landing()),
                 ]),
-                padding=ft.padding.all(16),
+                padding=ft.Padding.all(16),
                 bgcolor=ft.Colors.GREEN_50,
             ),
             # Info + open button
@@ -419,13 +482,13 @@ async def main(page: ft.Page):
                         color=ft.Colors.GREY_600,
                         selectable=True,
                     ),
-                    ft.ElevatedButton(
+                    ft.Button(
                         "Open Interactive Mindmap in Browser",
                         icon=ft.Icons.OPEN_IN_NEW,
                         on_click=open_file,
                     ),
                 ], spacing=8),
-                padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                padding=ft.Padding.symmetric(horizontal=16, vertical=8),
             ),
             # Markdown preview
             ft.Container(
@@ -435,10 +498,10 @@ async def main(page: ft.Page):
                     selectable=True,
                 ),
                 expand=True,
-                padding=ft.padding.all(16),
-                border=ft.border.all(1, ft.Colors.GREY_300),
+                padding=ft.Padding.all(16),
+                border=ft.Border.all(1, ft.Colors.GREY_300),
                 border_radius=8,
-                margin=ft.margin.symmetric(horizontal=16),
+                margin=ft.Margin.symmetric(horizontal=16),
             ),
         )
         page.update()
@@ -474,4 +537,4 @@ async def main(page: ft.Page):
     show_landing()
 
 
-ft.app(main)
+ft.run(main, view=ft.AppView.WEB_BROWSER, port=8000)

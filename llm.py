@@ -1,18 +1,58 @@
-"""Claude API integration for analysing brainstorming ideas."""
+"""LLM integration for analysing brainstorming ideas (multi-provider via litellm)."""
 
 import json
-import os
 
-import anthropic
-from dotenv import load_dotenv
+from litellm import acompletion
 
-load_dotenv()
+# ── Provider presets ─────────────────────────────────────────────────
+PROVIDERS = {
+    "Gemini Flash": "gemini/gemini-2.0-flash",
+    "Gemini Flash Lite": "gemini/gemini-2.0-flash-lite",
+    "OpenAI": "openai/gpt-4o-mini",
+    "Anthropic": "anthropic/claude-sonnet-4-6",
+}
 
-MODEL = "claude-sonnet-4-6"
+# ── Module-level config (set from UI) ───────────────────────────────
+_api_key: str | None = None
+_model: str = PROVIDERS["Gemini Flash"]
+
+
+def configure(provider: str, api_key: str):
+    """Set the active provider and API key."""
+    global _api_key, _model
+    _api_key = api_key
+    _model = PROVIDERS[provider]
+
+
+def is_configured() -> bool:
+    return bool(_api_key)
+
+
+async def validate_key(provider: str, api_key: str) -> str | None:
+    """Test the key with a tiny request. Returns None on success, error string on failure.
+
+    Quota/rate-limit errors are treated as 'key valid' (the key works, just throttled).
+    """
+    model = PROVIDERS[provider]
+    try:
+        await acompletion(
+            model=model,
+            messages=[{"role": "user", "content": "Say OK"}],
+            api_key=api_key,
+            max_tokens=5,
+        )
+        return None
+    except Exception as ex:
+        err = str(ex).lower()
+        print(f"[validate_key] {provider}: {ex}", flush=True)
+        # Quota/rate-limit errors mean the key itself is valid
+        if any(k in err for k in ("quota", "rate limit", "rate_limit", "429", "resource exhausted")):
+            return None
+        return str(ex)
 
 
 async def analyse_ideas(topic: str, ideas: list[dict]) -> dict:
-    """Send all ideas to Claude for deduplication, categorisation, and structuring.
+    """Send all ideas to the configured LLM for deduplication, categorisation, and structuring.
 
     Args:
         topic: The brainstorming session topic.
@@ -21,7 +61,8 @@ async def analyse_ideas(topic: str, ideas: list[dict]) -> dict:
     Returns:
         Structured dict with categories, ideas, dependencies, and summary.
     """
-    client = anthropic.AsyncAnthropic()
+    if not _api_key:
+        raise RuntimeError("No API key configured. Set one in the UI first.")
 
     ideas_text = "\n".join(
         f"- \"{idea['text']}\" (by {idea['author']})" for idea in ideas
@@ -75,13 +116,14 @@ Rules:
 - If ideas conflict, note the conflict rather than dropping either idea
 - Return ONLY valid JSON, no markdown fences or extra text"""
 
-    response = await client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
+    response = await acompletion(
+        model=_model,
         messages=[{"role": "user", "content": prompt}],
+        api_key=_api_key,
+        max_tokens=4096,
     )
 
-    text = response.content[0].text
+    text = response.choices[0].message.content
     # Strip markdown fences if present
     if text.startswith("```"):
         text = text.split("\n", 1)[1]
