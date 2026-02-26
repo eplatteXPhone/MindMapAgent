@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }}</title>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    #mindmap { width: 100vw; height: 100vh; }
+    .header {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+      background: rgba(255,255,255,0.95); padding: 8px 16px;
+      border-bottom: 1px solid #e0e0e0; font-size: 14px; color: #555;
+    }
+    .header strong { color: #333; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <strong>{{ title }}</strong> &mdash; {{ idea_count }} ideas &bull; {{ category_count }} categories
+    {% if summary %}&bull; {{ summary }}{% endif %}
+  </div>
+  <div id="mindmap">
+    <script type="text/template">
+{{ markdown }}
+    </script>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/markmap-autoloader"></script>
+</body>
+</html>
